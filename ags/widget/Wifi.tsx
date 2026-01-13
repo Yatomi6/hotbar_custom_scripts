@@ -1,6 +1,7 @@
-import { Gtk } from "ags/gtk3"
+import { Gtk, Gdk } from "ags/gtk3"
 import GLib from "gi://GLib?version=2.0"
 import Gio from "gi://Gio?version=2.0"
+import DbusmenuGtk3 from "gi://DbusmenuGtk3?version=0.4"
 import { createPoll } from "ags/time"
 import { execAsync } from "ags/process"
 import {
@@ -100,6 +101,23 @@ type MenuNode = {
 
 let menuProxy: Gio.DBusProxy | null = null
 let activeMenu: Gtk.Menu | null = null
+let trayMenu: Gtk.Menu | null = null
+
+function getTrayMenu() {
+  if (trayMenu) return trayMenu
+  try {
+    const menu = DbusmenuGtk3.Menu.new(NM_APPLET_DEST, NM_APPLET_MENU_PATH)
+    menu.get_style_context().add_class("wifi-tray-menu")
+    menu.connect("deactivate", () => {
+      menu.popdown()
+    })
+    trayMenu = menu
+    return trayMenu
+  } catch (_) {
+    trayMenu = null
+    return null
+  }
+}
 
 function getMenuProxy(): Gio.DBusProxy | null {
   if (menuProxy) return menuProxy
@@ -236,7 +254,23 @@ function buildMenuItem(node: MenuNode): Gtk.MenuItem | Gtk.SeparatorMenuItem | n
   return item
 }
 
-function openTrayWifiMenu(event: unknown) {
+function openTrayWifiMenu(widget?: Gtk.Widget | null, event?: Gdk.Event | null) {
+  try {
+    const menu = getTrayMenu()
+    if (!menu) throw new Error("tray menu unavailable")
+    if (widget) {
+      menu.attach_to_widget(widget, null)
+    }
+    const client = menu.get_client?.()
+    client?.get_root?.()
+    const [hasButton, button] = event?.get_button?.() ?? [false, 0]
+    const time = event?.get_time?.() ?? Gtk.get_current_event_time()
+    menu.popup(null, null, null, hasButton ? button : 0, time)
+    return
+  } catch (_) {
+    // fall back to manual menu building
+  }
+
   const layout = fetchMenuLayout()
   if (!layout) {
     execAsync("omarchy-launch-wifi").catch(() => null)
@@ -260,7 +294,18 @@ function openTrayWifiMenu(event: unknown) {
     if (activeMenu === menu) activeMenu = null
   })
   activeMenu = menu
-  menu.popup_at_pointer(event as any)
+  if (widget) {
+    menu.attach_to_widget(widget, null)
+  }
+  try {
+    menu.popup_at_pointer(event ?? null)
+  } catch (_) {
+    if (widget) {
+      try {
+        menu.popup_at_widget(widget, Gdk.Gravity.SOUTH_WEST, Gdk.Gravity.NORTH_WEST, event ?? null)
+      } catch (_) {}
+    }
+  }
 }
 
 type WifiDeviceInfo = {
@@ -447,8 +492,8 @@ export default function Wifi() {
       visible_window={false}
       visible={state.as((s) => s.visible)}
       tooltip_text={state.as((s) => s.tooltip)}
-      onButtonPressEvent={(_, event) => {
-        openTrayWifiMenu(event)
+      onButtonPressEvent={(widget, event) => {
+        openTrayWifiMenu(widget, event as any)
         return true
       }}
     >
