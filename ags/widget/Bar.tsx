@@ -5,6 +5,7 @@ import Brightness from "./Brightness"
 import Clock from "./Clock"
 import Audio from "./Audio"
 import HoverPanel from "./HoverPanel"
+import InputCounts from "./InputCounts"
 import Workspaces from "./Workspaces"
 import Wifi from "./Wifi"
 import {
@@ -61,6 +62,9 @@ export default function Bar(gdkmonitor: Gdk.Monitor) {
           spacing={0}
           halign={Gtk.Align.END}
         >
+          <RightItem>
+            <InputCounts />
+          </RightItem>
           <RightItem>
             <Wifi />
           </RightItem>
