@@ -156,13 +156,45 @@ if [ -z "$count" ]; then
 fi
 [ -n "$count" ] || exit 0
 
-count_dir="$lang_dir/$count"
-mapfile -t files < <(find "$count_dir" -maxdepth 1 -type f -name '*.txt' | sort)
-if [ "${#files[@]}" -eq 0 ]; then
-  err "No text files in $count_dir"
+case "$count" in
+  (*[!0-9]*|'')
+    err "Invalid word count: $count"
+    ;;
+esac
+
+mapfile -d '' -t source_files < <(find "$lang_dir" -mindepth 2 -maxdepth 2 -type f -name '*.txt' -print0)
+if [ "${#source_files[@]}" -eq 0 ]; then
+  err "No text files found in $lang_dir"
 fi
 
-file="$(printf '%s\n' "${files[@]}" | shuf -n 1)"
+tmp_wordlist="$(mktemp "${TMPDIR:-/tmp}/ttyper-wordlist.XXXXXXXX.txt")"
+tmp_sample="$(mktemp "${TMPDIR:-/tmp}/ttyper-sample.XXXXXXXX.txt")"
+
+cat "${source_files[@]}" | tr -s '[:space:]' '\n' | sed '/^$/d' > "$tmp_wordlist"
+if [ ! -s "$tmp_wordlist" ]; then
+  err "Word list is empty for $lang"
+fi
+
+if command -v shuf >/dev/null 2>&1; then
+  shuf -r -n "$count" "$tmp_wordlist" > "$tmp_sample"
+else
+  TYPER_WORDLIST="$tmp_wordlist" TYPER_SAMPLE="$tmp_sample" TYPER_COUNT="$count" python - <<'PY'
+import os, random, sys
+wordlist = os.environ["TYPER_WORDLIST"]
+sample = os.environ["TYPER_SAMPLE"]
+count = int(os.environ["TYPER_COUNT"])
+with open(wordlist, "r", encoding="utf-8", errors="ignore") as fh:
+  words = [line.strip() for line in fh if line.strip()]
+if not words:
+  sys.exit("Word list is empty")
+with open(sample, "w", encoding="utf-8") as out:
+  for _ in range(count):
+    out.write(random.choice(words) + "\n")
+PY
+fi
+if [ ! -s "$tmp_sample" ]; then
+  err "Failed to sample words for $lang"
+fi
 
 cols="$TYPER_COLS"
 lines="$TYPER_LINES"
@@ -192,7 +224,7 @@ if command -v xdg-terminal-exec >/dev/null 2>&1; then
   term_id="$(xdg-terminal-exec --print-id 2>/dev/null | head -n 1 || true)"
 fi
 
-ttyper_cmd=(ttyper "$file")
+ttyper_cmd=(bash -lc 'ttyper "$1"; rc=$?; rm -f -- "$1" "$2"; exit $rc' bash "$tmp_sample" "$tmp_wordlist")
 
 if [ "$term_id" = "Alacritty.desktop" ] && command -v alacritty >/dev/null 2>&1; then
   if command -v uwsm-app >/dev/null 2>&1; then

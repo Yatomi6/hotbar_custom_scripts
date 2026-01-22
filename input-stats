@@ -14,6 +14,7 @@ DATA_FILE = os.environ.get(
     "INPUT_STATS_FILE",
     os.path.join(HOME, ".local", "state", "ags", "input-counts.json"),
 )
+ACTIVE_FILE = os.path.join(HOME, ".local", "state", "ags", "input-stats-active")
 COLS = int(os.environ.get("INPUT_STATS_COLS", "96"))
 ROWS = int(os.environ.get("INPUT_STATS_ROWS", "54"))
 
@@ -103,6 +104,22 @@ def load_stats():
     return stats
 
 
+def touch_active():
+    try:
+        os.makedirs(os.path.dirname(ACTIVE_FILE), exist_ok=True)
+        with open(ACTIVE_FILE, "w", encoding="utf-8") as fh:
+            fh.write(str(int(time.time() * 1000)))
+    except Exception:
+        pass
+
+
+def clear_active():
+    try:
+        os.remove(ACTIVE_FILE)
+    except Exception:
+        pass
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=UI_DIR, **kwargs)
@@ -118,7 +135,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
+        if path == "/active":
+            touch_active()
+            self.send_response(204)
+            self.end_headers()
+            return
+        if path == "/inactive":
+            clear_active()
+            self.send_response(204)
+            self.end_headers()
+            return
         super().do_GET()
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path == "/active":
+            touch_active()
+            self.send_response(204)
+            self.end_headers()
+            return
+        if path == "/inactive":
+            clear_active()
+            self.send_response(204)
+            self.end_headers()
+            return
+        self.send_response(404)
+        self.end_headers()
 
     def log_message(self, *_args):
         return

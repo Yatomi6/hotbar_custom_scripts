@@ -30,9 +30,11 @@ type DeviceType = "mouse" | "touchpad" | "keyboard" | "unknown"
 
 const STATE_DIR = `${GLib.get_home_dir()}/.local/state/ags`
 const STATE_PATH = `${STATE_DIR}/input-counts.json`
+const ACTIVE_PATH = `${STATE_DIR}/input-stats-active`
 const SAVE_DELAY_MS = 2000
 const DAY_CHECK_MS = 60000
 const POINTER_POLL_MS = 400
+const ACTIVE_WINDOW_MS = 6000
 
 export const HEATMAP_COLS = 96
 export const HEATMAP_ROWS = 54
@@ -134,6 +136,19 @@ const normalizeState = (raw: Partial<InputState> | null): InputState => {
   }
 }
 
+const isHeatmapActive = () => {
+  try {
+    const [ok, contents] = GLib.file_get_contents(ACTIVE_PATH)
+    if (!ok || !contents) return false
+    const text = new TextDecoder().decode(contents).trim()
+    const ts = Number(text)
+    if (!Number.isFinite(ts) || ts <= 0) return false
+    return Date.now() - ts <= ACTIVE_WINDOW_MS
+  } catch (_) {
+    return false
+  }
+}
+
 const ensureStateDir = () => {
   try {
     GLib.mkdir_with_parents(STATE_DIR, 0o755)
@@ -173,9 +188,11 @@ const classifyDevice = (text: string): DeviceType => {
 }
 
 type PressedState = { left: boolean; right: boolean }
+type PointerPos = { x: number; y: number }
 
 const deviceTypes = new Map<string, DeviceType>()
 const pressedByEvent = new Map<string, PressedState>()
+let lastPointer: PointerPos | null = null
 
 const [state, setState] = createState<InputState>(loadState())
 const [available, setAvailable] = createState(true)
@@ -240,6 +257,19 @@ const bumpScroll = (vertical: number | null, horizontal: number | null) => {
 }
 
 const getPointerPosition = () => {
+  const display = Gdk.Display.get_default()
+  if (display) {
+    const seat = display.get_default_seat()
+    const device = seat?.get_pointer()
+    if (device) {
+      try {
+        const [, x, y] = device.get_position()
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+          return { x, y }
+        }
+      } catch (_) {}
+    }
+  }
   const hyprJson = runCommand("hyprctl -j cursorpos")
   if (hyprJson) {
     try {
@@ -262,17 +292,7 @@ const getPointerPosition = () => {
       }
     }
   }
-  const display = Gdk.Display.get_default()
-  if (!display) return null
-  const seat = display.get_default_seat()
-  const device = seat?.get_pointer()
-  if (!device) return null
-  try {
-    const [, x, y] = device.get_position()
-    return { x, y }
-  } catch (_) {
-    return null
-  }
+  return null
 }
 
 const getDisplayBounds = () => {
@@ -303,9 +323,11 @@ const getDisplayBounds = () => {
 }
 
 const recordClickAtPointer = (side: "left" | "right") => {
-  const pos = getPointerPosition()
+  if (!isHeatmapActive()) return
+  const pos = getPointerPosition() ?? lastPointer
   const bounds = getDisplayBounds()
   if (!pos || !bounds) return
+  lastPointer = pos
   updateScreenSize(bounds)
   const relX = (pos.x - bounds.x) / bounds.width
   const relY = (pos.y - bounds.y) / bounds.height
@@ -369,7 +391,12 @@ const parseAxis = (text: string, token: string) => {
 }
 
 function spawnInputStream(onLine: (line: string) => void) {
-  const argv = ["libinput", "debug-events", "--show-keycodes"]
+  const argv = [
+    "libinput",
+    "debug-events",
+    "--show-keycodes",
+    "--compress-motion-events",
+  ]
   try {
     const [ok, pid, stdinFd, stdoutFd, stderrFd] =
       GLib.spawn_async_with_pipes(
@@ -418,6 +445,23 @@ function spawnInputStream(onLine: (line: string) => void) {
 const watcher = spawnInputStream((line) => {
   const text = line.trim()
   if (!text) return
+  if (!text.startsWith("{")) {
+    const upper = text.toUpperCase()
+    if (
+      !upper.includes("DEVICE_") &&
+      !upper.includes("POINTER_BUTTON") &&
+      !upper.includes("POINTER_SCROLL") &&
+      !upper.includes("POINTER_TAP") &&
+      !upper.includes("TOUCHPAD_TAP") &&
+      !upper.includes("GESTURE_TAP") &&
+      !upper.includes("GESTURE_HOLD_BEGIN") &&
+      !upper.includes("KEYBOARD_KEY") &&
+      !upper.includes("BTN_") &&
+      !upper.includes("BUTTON")
+    ) {
+      return
+    }
+  }
 
   if (text.startsWith("{")) {
     let payload:
@@ -471,7 +515,12 @@ const watcher = spawnInputStream((line) => {
     bumpScroll(vertical, horizontal)
   }
 
-  if (/POINTER_BUTTON/i.test(text) && /(pressed|released)/i.test(text)) {
+  if (
+    (/POINTER_BUTTON/i.test(text) ||
+      /BTN_LEFT|BTN_RIGHT/i.test(text) ||
+      /button\s+(?:272|273|1|3)/i.test(text)) &&
+    /(pressed|released)/i.test(text)
+  ) {
     const isPressed = /pressed/i.test(text)
     const isReleased = /released/i.test(text)
     const isLeft = /BTN_LEFT/i.test(text)
@@ -552,12 +601,12 @@ GLib.timeout_add(GLib.PRIORITY_DEFAULT, DAY_CHECK_MS, () => {
   return GLib.SOURCE_CONTINUE
 })
 
-let lastPointer = getPointerPosition()
 GLib.timeout_add(GLib.PRIORITY_DEFAULT, POINTER_POLL_MS, () => {
   const current = getPointerPosition()
   const bounds = getDisplayBounds()
   if (bounds) updateScreenSize(bounds)
-  if (!current || !lastPointer) {
+  if (!current) return GLib.SOURCE_CONTINUE
+  if (!lastPointer) {
     lastPointer = current
     return GLib.SOURCE_CONTINUE
   }

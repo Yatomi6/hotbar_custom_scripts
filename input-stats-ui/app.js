@@ -136,6 +136,7 @@ const keyElements = new Map();
 const clickCells = [];
 let currentMode = "left";
 let currentData = DEFAULT_STATS;
+let activePing = null;
 
 function clamp(value, min = 0, max = 1) {
   return Math.max(min, Math.min(max, value));
@@ -311,6 +312,10 @@ function render(data) {
   renderKeyHeatmap(currentData);
 }
 
+function pingActive() {
+  fetch("/active", { method: "POST", keepalive: true }).catch(() => null);
+}
+
 async function loadStats() {
   try {
     const response = await fetch("/stats.json", { cache: "no-store" });
@@ -329,6 +334,13 @@ function init() {
     updateClickGridSize();
     renderClickHeatmap();
   });
+  window.addEventListener("beforeunload", () => {
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon("/inactive");
+      return;
+    }
+    fetch("/inactive", { method: "POST", keepalive: true }).catch(() => null);
+  });
   elements.clickToggle.addEventListener("click", (event) => {
     const button = event.target.closest(".toggle-btn");
     if (!button) return;
@@ -336,6 +348,8 @@ function init() {
   });
   elements.refresh.addEventListener("click", loadStats);
   setMode("left");
+  pingActive();
+  activePing = setInterval(pingActive, 2000);
   loadStats();
   setInterval(loadStats, 2000);
 }
